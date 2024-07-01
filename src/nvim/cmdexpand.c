@@ -240,6 +240,9 @@ int nextwild(expand_T *xp, int type, int options, bool escape)
 
   if (xp->xp_numfiles == -1) {
     set_expand_context(xp);
+    if (xp->xp_context == EXPAND_LUA) {
+      nlua_expand_pat(xp, xp->xp_pattern);
+    }
     cmd_showtail = expand_showtail(xp);
   }
 
@@ -286,11 +289,6 @@ int nextwild(expand_T *xp, int type, int options, bool escape)
     p2 = ExpandOne(xp, p1, xstrnsave(&ccline->cmdbuff[i], xp->xp_pattern_len),
                    use_options, type);
     xfree(p1);
-
-    // xp->xp_pattern might have been modified by ExpandOne (for example,
-    // in lua completion), so recompute the pattern index and length
-    i = (int)(xp->xp_pattern - ccline->cmdbuff);
-    xp->xp_pattern_len = (size_t)ccline->cmdpos - (size_t)i;
 
     // Longest match: make sure it is not shorter, happens with :help.
     if (p2 != NULL && type == WILD_LONGEST) {
@@ -400,6 +398,20 @@ void cmdline_pum_cleanup(CmdlineInfo *cclp)
 {
   cmdline_pum_remove();
   wildmenu_cleanup(cclp);
+}
+
+/// Returns the current cmdline completion pattern.
+char *cmdline_compl_pattern(void)
+{
+  expand_T *xp = get_cmdline_info()->xpc;
+  return xp == NULL ? NULL : xp->xp_orig;
+}
+
+/// Returns true if fuzzy cmdline completion is active, false otherwise.
+bool cmdline_compl_is_fuzzy(void)
+{
+  expand_T *xp = get_cmdline_info()->xpc;
+  return xp != NULL && cmdline_fuzzy_completion_supported(xp);
 }
 
 /// Return the number of characters that should be skipped in the wildmenu
@@ -1047,6 +1059,9 @@ int showmatches(expand_T *xp, bool wildmenu)
 
   if (xp->xp_numfiles == -1) {
     set_expand_context(xp);
+    if (xp->xp_context == EXPAND_LUA) {
+      nlua_expand_pat(xp, xp->xp_pattern);
+    }
     int i = expand_cmdline(xp, ccline->cmdbuff, ccline->cmdpos,
                            &numMatches, &matches);
     showtail = expand_showtail(xp);
@@ -2247,7 +2262,7 @@ static const char *set_one_cmd_context(expand_T *xp, const char *buff)
 
   // Does command allow "++argopt" argument?
   if (ea.argt & EX_ARGOPT) {
-    while (*arg != NUL && strncmp(arg, S_LEN("++")) == 0) {
+    while (*arg != NUL && strncmp(arg, "++", 2) == 0) {
       p = arg + 2;
       while (*p && !ascii_isspace(*p)) {
         MB_PTR_ADV(p);
@@ -2774,7 +2789,7 @@ static int ExpandFromContext(expand_T *xp, char *pat, char ***matches, int *numM
   // When expanding a function name starting with s:, match the <SNR>nr_
   // prefix.
   char *tofree = NULL;
-  if (xp->xp_context == EXPAND_USER_FUNC && strncmp(pat, S_LEN("^s:")) == 0) {
+  if (xp->xp_context == EXPAND_USER_FUNC && strncmp(pat, "^s:", 3) == 0) {
     const size_t len = strlen(pat) + 20;
 
     tofree = xmalloc(len);
@@ -2783,8 +2798,7 @@ static int ExpandFromContext(expand_T *xp, char *pat, char ***matches, int *numM
   }
 
   if (xp->xp_context == EXPAND_LUA) {
-    ILOG("PAT %s", pat);
-    return nlua_expand_pat(xp, pat, numMatches, matches);
+    return nlua_expand_get_matches(numMatches, matches);
   }
 
   if (!fuzzy) {
@@ -3564,7 +3578,7 @@ void f_getcompletion(typval_T *argvars, typval_T *rettv, EvalFuncData fptr)
 
   if (xpc.xp_context == EXPAND_USER_DEFINED) {
     // Must be "custom,funcname" pattern
-    if (strncmp(type, S_LEN("custom,")) != 0) {
+    if (strncmp(type, "custom,", 7) != 0) {
       semsg(_(e_invarg2), type);
       return;
     }
@@ -3574,7 +3588,7 @@ void f_getcompletion(typval_T *argvars, typval_T *rettv, EvalFuncData fptr)
 
   if (xpc.xp_context == EXPAND_USER_LIST) {
     // Must be "customlist,funcname" pattern
-    if (strncmp(type, S_LEN("customlist,")) != 0) {
+    if (strncmp(type, "customlist,", 11) != 0) {
       semsg(_(e_invarg2), type);
       return;
     }
@@ -3596,7 +3610,10 @@ void f_getcompletion(typval_T *argvars, typval_T *rettv, EvalFuncData fptr)
   }
 
 theend:
-  ;
+  if (xpc.xp_context == EXPAND_LUA) {
+    nlua_expand_pat(&xpc, xpc.xp_pattern);
+    xpc.xp_pattern_len = strlen(xpc.xp_pattern);
+  }
   char *pat;
   if (cmdline_fuzzy_completion_supported(&xpc)) {
     // when fuzzy matching, don't modify the search string

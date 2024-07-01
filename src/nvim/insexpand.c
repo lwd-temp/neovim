@@ -43,6 +43,7 @@
 #include "nvim/indent_c.h"
 #include "nvim/insexpand.h"
 #include "nvim/keycodes.h"
+#include "nvim/lua/executor.h"
 #include "nvim/macros_defs.h"
 #include "nvim/mark_defs.h"
 #include "nvim/mbyte.h"
@@ -122,7 +123,7 @@ static char *ctrl_x_msgs[] = {
   N_(" Command-line completion (^V^N^P)"),
   N_(" User defined completion (^U^N^P)"),
   N_(" Omni completion (^O^N^P)"),
-  N_(" Spelling suggestion (s^N^P)"),
+  N_(" Spelling suggestion (^S^N^P)"),
   N_(" Keyword Local completion (^N^P)"),
   NULL,  // CTRL_X_EVAL doesn't use msg.
   N_(" Command-line completion (^V^N^P)"),
@@ -1144,11 +1145,13 @@ static void trigger_complete_changed_event(int cur)
 }
 
 /// pumitem qsort compare func
-static int ins_compl_fuzzy_sort(const void *a, const void *b)
+static int ins_compl_fuzzy_cmp(const void *a, const void *b)
 {
   const int sa = (*(pumitem_T *)a).pum_score;
   const int sb = (*(pumitem_T *)b).pum_score;
-  return sa == sb ? 0 : sa < sb ? 1 : -1;
+  const int ia = (*(pumitem_T *)a).pum_idx;
+  const int ib = (*(pumitem_T *)b).pum_idx;
+  return sa == sb ? (ia == ib ? 0 : (ia < ib ? -1 : 1)) : (sa < sb ? 1 : -1);
 }
 
 /// Build a popup menu to show the completion matches.
@@ -1228,6 +1231,9 @@ static int ins_compl_build_pum(void)
         }
         cur = i;
       } else if (compl_fuzzy_match) {
+        if (i == 0) {
+          shown_compl = comp;
+        }
         // Update the maximum fuzzy score and the shown match
         // if the current item's score is higher
         if (comp->cp_score > max_fuzzy_score) {
@@ -1246,6 +1252,9 @@ static int ins_compl_build_pum(void)
                 || (compl_leader == NULL || lead_len == 0))) {
           shown_match_ok = true;
           cur = 0;
+          if (match_at_original_text(compl_shown_match)) {
+            compl_shown_match = shown_compl;
+          }
         }
       }
 
@@ -1284,9 +1293,12 @@ static int ins_compl_build_pum(void)
   } while (comp != NULL && !is_first_match(comp));
 
   if (compl_fuzzy_match && compl_leader != NULL && lead_len > 0) {
+    for (i = 0; i < compl_match_arraysize; i++) {
+      compl_match_array[i].pum_idx = i;
+    }
     // sort by the largest score of fuzzy match
     qsort(compl_match_array, (size_t)compl_match_arraysize, sizeof(pumitem_T),
-          ins_compl_fuzzy_sort);
+          ins_compl_fuzzy_cmp);
   }
 
   if (!shown_match_ok) {  // no displayed match at all
@@ -1382,6 +1394,12 @@ bool compl_match_curr_select(int selected)
 
 #define DICT_FIRST      (1)     ///< use just first element in "dict"
 #define DICT_EXACT      (2)     ///< "dict" is the exact name of a file
+
+/// Get current completion leader
+char *ins_compl_leader(void)
+{
+  return compl_leader != NULL ? compl_leader : compl_orig_text;
+}
 
 /// Add any identifiers that match the given pattern "pat" in the list of
 /// dictionary files "dict_start" to the list of completions.
@@ -3681,16 +3699,16 @@ static int find_next_completion_match(bool allow_get_expansion, int todo, bool a
 
   while (--todo >= 0) {
     if (compl_shows_dir_forward() && compl_shown_match->cp_next != NULL) {
-      compl_shown_match = !compl_fuzzy_match ? compl_shown_match->cp_next
-                                             : find_comp_when_fuzzy();
+      compl_shown_match = compl_fuzzy_match && compl_match_array != NULL
+                          ? find_comp_when_fuzzy() : compl_shown_match->cp_next;
       found_end = (compl_first_match != NULL
                    && (is_first_match(compl_shown_match->cp_next)
                        || is_first_match(compl_shown_match)));
     } else if (compl_shows_dir_backward()
                && compl_shown_match->cp_prev != NULL) {
       found_end = is_first_match(compl_shown_match);
-      compl_shown_match = !compl_fuzzy_match ? compl_shown_match->cp_prev
-                                             : find_comp_when_fuzzy();
+      compl_shown_match = compl_fuzzy_match && compl_match_array != NULL
+                          ? find_comp_when_fuzzy() : compl_shown_match->cp_prev;
       found_end |= is_first_match(compl_shown_match);
     } else {
       if (!allow_get_expansion) {
@@ -4127,6 +4145,9 @@ static int get_cmdline_compl_info(char *line, colnr_T curs_col)
   compl_pattern = xstrnsave(line, (size_t)curs_col);
   compl_patternlen = (size_t)curs_col;
   set_cmd_context(&compl_xp, compl_pattern, (int)compl_patternlen, curs_col, false);
+  if (compl_xp.xp_context == EXPAND_LUA) {
+    nlua_expand_pat(&compl_xp, compl_xp.xp_pattern);
+  }
   if (compl_xp.xp_context == EXPAND_UNSUCCESSFUL
       || compl_xp.xp_context == EXPAND_NOTHING) {
     // No completion possible, use an empty pattern to get a

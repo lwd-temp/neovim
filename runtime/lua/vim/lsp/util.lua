@@ -516,7 +516,6 @@ function M.apply_text_document_edit(text_document_edit, index, offset_encoding)
     and (
       text_document.version
       and text_document.version > 0
-      and M.buf_versions[bufnr]
       and M.buf_versions[bufnr] > text_document.version
     )
   then
@@ -641,7 +640,7 @@ function M.rename(old_fname, new_fname, opts)
     -- Rename with :saveas. This does two things:
     -- * Unset BF_WRITE_MASK, so that users don't get E13 when they do :write.
     -- * Send didClose and didOpen via textDocument/didSave handler.
-    api.nvim_buf_call(b, function()
+    vim._with({ buf = b }, function()
       vim.cmd('keepalt saveas! ' .. vim.fn.fnameescape(rename.to))
     end)
     -- Delete the new buffer with the old name created by :saveas. nvim_buf_delete and
@@ -1015,7 +1014,7 @@ function M.show_document(location, offset_encoding, opts)
     local row = range.start.line
     local col = get_line_byte_from_position(bufnr, range.start, offset_encoding)
     api.nvim_win_set_cursor(win, { row + 1, col })
-    api.nvim_win_call(win, function()
+    vim._with({ win = win }, function()
       -- Open folds under the cursor
       vim.cmd('normal! zv')
     end)
@@ -1335,7 +1334,7 @@ function M.stylize_markdown(bufnr, contents, opts)
   end
 
   -- needs to run in the buffer for the regions to work
-  api.nvim_buf_call(bufnr, function()
+  vim._with({ buf = bufnr }, function()
     -- we need to apply lsp_markdown regions speperately, since otherwise
     -- markdown regions can "bleed" through the other syntax regions
     -- and mess up the formatting
@@ -2222,6 +2221,11 @@ end
 M._get_line_byte_from_position = get_line_byte_from_position
 
 ---@nodoc
-M.buf_versions = {} ---@type table<integer,integer>
+---@type table<integer,integer>
+M.buf_versions = setmetatable({}, {
+  __index = function(t, bufnr)
+    return rawget(t, bufnr) or 0
+  end,
+})
 
 return M

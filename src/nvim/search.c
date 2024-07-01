@@ -21,12 +21,14 @@
 #include "nvim/errors.h"
 #include "nvim/eval.h"
 #include "nvim/eval/typval.h"
+#include "nvim/eval/typval_defs.h"
 #include "nvim/ex_cmds.h"
 #include "nvim/ex_cmds_defs.h"
 #include "nvim/ex_docmd.h"
 #include "nvim/ex_getln.h"
 #include "nvim/fileio.h"
 #include "nvim/fold.h"
+#include "nvim/garray.h"
 #include "nvim/getchar.h"
 #include "nvim/gettext_defs.h"
 #include "nvim/globals.h"
@@ -543,7 +545,7 @@ void last_pat_prog(regmmatch_T *regmatch)
     return;
   }
   emsg_off++;           // So it doesn't beep if bad expr
-  search_regcomp(S_LEN(""), NULL, 0, last_idx, SEARCH_KEEP, regmatch);
+  search_regcomp("", 0, NULL, 0, last_idx, SEARCH_KEEP, regmatch);
   emsg_off--;
 }
 
@@ -1821,9 +1823,9 @@ pos_T *findmatchlimit(oparg_T *oap, int initc, int flags, int64_t maxtravel)
         ptr = skipwhite(linep);
         if (*ptr == '#' && pos.col <= (colnr_T)(ptr - linep)) {
           ptr = skipwhite(ptr + 1);
-          if (strncmp(ptr, S_LEN("if")) == 0
-              || strncmp(ptr, S_LEN("endif")) == 0
-              || strncmp(ptr, S_LEN("el")) == 0) {
+          if (strncmp(ptr, "if", 2) == 0
+              || strncmp(ptr, "endif", 5) == 0
+              || strncmp(ptr, "el", 2) == 0) {
             hash_dir = 1;
           }
         } else if (linep[pos.col] == '/') {  // Are we on a comment?
@@ -1894,9 +1896,9 @@ pos_T *findmatchlimit(oparg_T *oap, int initc, int flags, int64_t maxtravel)
       }
       if (initc != '#') {
         ptr = skipwhite(skipwhite(linep) + 1);
-        if (strncmp(ptr, S_LEN("if")) == 0 || strncmp(ptr, S_LEN("el")) == 0) {
+        if (strncmp(ptr, "if", 2) == 0 || strncmp(ptr, "el", 2) == 0) {
           hash_dir = 1;
-        } else if (strncmp(ptr, S_LEN("endif")) == 0) {
+        } else if (strncmp(ptr, "endif", 5) == 0) {
           hash_dir = -1;
         } else {
           return NULL;
@@ -1921,29 +1923,29 @@ pos_T *findmatchlimit(oparg_T *oap, int initc, int flags, int64_t maxtravel)
         pos.col = (colnr_T)(ptr - linep);
         ptr = skipwhite(ptr + 1);
         if (hash_dir > 0) {
-          if (strncmp(ptr, S_LEN("if")) == 0) {
+          if (strncmp(ptr, "if", 2) == 0) {
             count++;
-          } else if (strncmp(ptr, S_LEN("el")) == 0) {
+          } else if (strncmp(ptr, "el", 2) == 0) {
             if (count == 0) {
               return &pos;
             }
-          } else if (strncmp(ptr, S_LEN("endif")) == 0) {
+          } else if (strncmp(ptr, "endif", 5) == 0) {
             if (count == 0) {
               return &pos;
             }
             count--;
           }
         } else {
-          if (strncmp(ptr, S_LEN("if")) == 0) {
+          if (strncmp(ptr, "if", 2) == 0) {
             if (count == 0) {
               return &pos;
             }
             count--;
-          } else if (initc == '#' && strncmp(ptr, S_LEN("el")) == 0) {
+          } else if (initc == '#' && strncmp(ptr, "el", 2) == 0) {
             if (count == 0) {
               return &pos;
             }
-          } else if (strncmp(ptr, S_LEN("endif")) == 0) {
+          } else if (strncmp(ptr, "endif", 5) == 0) {
             count++;
           }
         }
@@ -3542,6 +3544,37 @@ int fuzzy_match_str(char *const str, const char *const pat)
   return score;
 }
 
+/// Fuzzy match the position of string "pat" in string "str".
+/// @returns a dynamic array of matching positions. If there is no match, returns NULL.
+garray_T *fuzzy_match_str_with_pos(char *const str, const char *const pat)
+{
+  if (str == NULL || pat == NULL) {
+    return NULL;
+  }
+
+  garray_T *match_positions = xmalloc(sizeof(garray_T));
+  ga_init(match_positions, sizeof(uint32_t), 10);
+
+  unsigned matches[MAX_FUZZY_MATCHES];
+  int score = 0;
+  if (!fuzzy_match(str, pat, false, &score, matches, MAX_FUZZY_MATCHES)
+      || score == 0) {
+    ga_clear(match_positions);
+    xfree(match_positions);
+    return NULL;
+  }
+
+  int j = 0;
+  for (const char *p = pat; *p != NUL; MB_PTR_ADV(p)) {
+    if (!ascii_iswhite(utf_ptr2char(p))) {
+      GA_APPEND(uint32_t, match_positions, matches[j]);
+      j++;
+    }
+  }
+
+  return match_positions;
+}
+
 /// Copy a list of fuzzy matches into a string list after sorting the matches by
 /// the fuzzy score. Frees the memory allocated for "fuzmatch".
 void fuzzymatches_to_strmatches(fuzmatch_str_T *const fuzmatch, char ***const matches,
@@ -3891,7 +3924,7 @@ search_line:
           // is not considered to be a comment line.
           if (skip_comments) {
             if ((*line != '#'
-                 || strncmp(skipwhite(line + 1), S_LEN("define")) != 0)
+                 || strncmp(skipwhite(line + 1), "define", 6) != 0)
                 && get_leader_len(line, NULL, false, true)) {
               matched = false;
             }
@@ -4288,10 +4321,4 @@ void set_last_used_pattern(const bool is_substitute_pattern)
 bool search_was_last_used(void)
 {
   return last_idx == 0;
-}
-
-/// @return  true if 'hlsearch' highlight is currently in use.
-bool using_hlsearch(void)
-{
-  return spats[last_idx].pat != NULL && p_hls && !no_hlsearch;
 }

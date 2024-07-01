@@ -343,14 +343,6 @@ void terminal_open(Terminal **termpp, buf_T *buf, TerminalOptions opts)
   refresh_screen(term, buf);
   set_option_value(kOptBuftype, STATIC_CSTR_AS_OPTVAL("terminal"), OPT_LOCAL);
 
-  // Default settings for terminal buffers
-  buf->b_p_ma = false;     // 'nomodifiable'
-  buf->b_p_ul = -1;        // 'undolevels'
-  buf->b_p_scbk =          // 'scrollback' (initialize local from global)
-                  (p_scbk < 0) ? 10000 : MAX(1, p_scbk);
-  buf->b_p_tw = 0;         // 'textwidth'
-  set_option_value(kOptWrap, BOOLEAN_OPTVAL(false), OPT_LOCAL);
-  set_option_value(kOptList, BOOLEAN_OPTVAL(false), OPT_LOCAL);
   if (buf->b_ffname != NULL) {
     buf_set_term_title(buf, buf->b_ffname, strlen(buf->b_ffname));
   }
@@ -852,9 +844,9 @@ void terminal_paste(int count, char **y_array, size_t y_size)
       if (j) {
         // terminate the previous line
 #ifdef MSWIN
-        terminal_send(curbuf->terminal, S_LEN("\r\n"));
+        terminal_send(curbuf->terminal, "\r\n", 2);
 #else
-        terminal_send(curbuf->terminal, S_LEN("\n"));
+        terminal_send(curbuf->terminal, "\n", 1);
 #endif
       }
       size_t len = strlen(y_array[j]);

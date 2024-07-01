@@ -1396,8 +1396,10 @@ int do_buffer(int action, int start, int dir, int count, int forceit)
 
     // If the buffer to be deleted is not the current one, delete it here.
     if (buf != curbuf) {
-      // Remove the buffer to be deleted from the jump list.
-      buf_remove_from_jumplist(buf);
+      if (jop_flags & JOP_UNLOAD) {
+        // Remove the buffer to be deleted from the jump list.
+        buf_remove_from_jumplist(buf);
+      }
 
       close_windows(buf, false);
 
@@ -1420,28 +1422,37 @@ int do_buffer(int action, int start, int dir, int count, int forceit)
     if (au_new_curbuf.br_buf != NULL && bufref_valid(&au_new_curbuf)) {
       buf = au_new_curbuf.br_buf;
     } else if (curwin->w_jumplistlen > 0) {
-      // Remove the current buffer from the jump list.
-      buf_remove_from_jumplist(curbuf);
+      if (jop_flags & JOP_UNLOAD) {
+        // Remove the current buffer from the jump list.
+        buf_remove_from_jumplist(curbuf);
+      }
 
       // It's possible that we removed all jump list entries, in that case we need to try another
       // approach
       if (curwin->w_jumplistlen > 0) {
-        // If the index is the same as the length, the current position was not yet added to the jump
-        // list. So we can safely go back to the last entry and search from there.
-        if (curwin->w_jumplistidx == curwin->w_jumplistlen) {
-          curwin->w_jumplistidx = curwin->w_jumplistlen - 1;
-        }
-
         int jumpidx = curwin->w_jumplistidx;
 
+        if (jop_flags & JOP_UNLOAD) {
+          // If the index is the same as the length, the current position was not yet added to the
+          // jump list. So we can safely go back to the last entry and search from there.
+          if (jumpidx == curwin->w_jumplistlen) {
+            jumpidx = curwin->w_jumplistidx = curwin->w_jumplistlen - 1;
+          }
+        } else {
+          jumpidx--;
+          if (jumpidx < 0) {
+            jumpidx = curwin->w_jumplistlen - 1;
+          }
+        }
+
         forward = jumpidx;
-        do {
+        while ((jop_flags & JOP_UNLOAD) || jumpidx != curwin->w_jumplistidx) {
           buf = buflist_findnr(curwin->w_jumplist[jumpidx].fmark.fnum);
 
           if (buf != NULL) {
-            // Skip unlisted bufs.  Also skip a quickfix
+            // Skip current and unlisted bufs.  Also skip a quickfix
             // buffer, it might be deleted soon.
-            if (!buf->b_p_bl || bt_quickfix(buf)) {
+            if (buf == curbuf || !buf->b_p_bl || bt_quickfix(buf)) {
               buf = NULL;
             } else if (buf->b_ml.ml_mfp == NULL) {
               // skip unloaded buf, but may keep it for later
@@ -1452,8 +1463,10 @@ int do_buffer(int action, int start, int dir, int count, int forceit)
             }
           }
           if (buf != NULL) {         // found a valid buffer: stop searching
-            curwin->w_jumplistidx = jumpidx;
-            update_jumplist = false;
+            if (jop_flags & JOP_UNLOAD) {
+              curwin->w_jumplistidx = jumpidx;
+              update_jumplist = false;
+            }
             break;
           }
           // advance to older entry in jump list
@@ -1466,7 +1479,7 @@ int do_buffer(int action, int start, int dir, int count, int forceit)
           if (jumpidx == forward) {               // List exhausted for sure
             break;
           }
-        } while (jumpidx != curwin->w_jumplistidx);
+        }
       }
     }
 
@@ -3728,7 +3741,7 @@ void ex_buffer_all(exarg_T *eap)
 
       // Open the buffer in this window.
       swap_exists_action = SEA_DIALOG;
-      set_curbuf(buf, DOBUF_GOTO, false);
+      set_curbuf(buf, DOBUF_GOTO, !(jop_flags & JOP_UNLOAD));
       if (!bufref_valid(&bufref)) {
         // Autocommands deleted the buffer.
         swap_exists_action = SEA_NONE;
@@ -3850,8 +3863,8 @@ static int chk_modeline(linenr_T lnum, int flags)
   int prev = -1;
   for (s = ml_get(lnum); *s != NUL; s++) {
     if (prev == -1 || ascii_isspace(prev)) {
-      if ((prev != -1 && strncmp(s, S_LEN("ex:")) == 0)
-          || strncmp(s, S_LEN("vi:")) == 0) {
+      if ((prev != -1 && strncmp(s, "ex:", 3) == 0)
+          || strncmp(s, "vi:", 3) == 0) {
         break;
       }
       // Accept both "vim" and "Vim".
@@ -3867,7 +3880,7 @@ static int chk_modeline(linenr_T lnum, int flags)
 
         if (*e == ':'
             && (s[0] != 'V'
-                || strncmp(skipwhite(e + 1), S_LEN("set")) == 0)
+                || strncmp(skipwhite(e + 1), "set", 3) == 0)
             && (s[3] == ':'
                 || (VIM_VERSION_100 >= vers && isdigit((uint8_t)s[3]))
                 || (VIM_VERSION_100 < vers && s[3] == '<')
@@ -3916,8 +3929,8 @@ static int chk_modeline(linenr_T lnum, int flags)
     // "vi:set opt opt opt: foo" -- foo not interpreted
     // "vi:opt opt opt: foo" -- foo interpreted
     // Accept "se" for compatibility with Elvis.
-    if (strncmp(s, S_LEN("set ")) == 0
-        || strncmp(s, S_LEN("se ")) == 0) {
+    if (strncmp(s, "set ", 4) == 0
+        || strncmp(s, "se ", 3) == 0) {
       if (*e != ':') {                // no terminating ':'?
         break;
       }
